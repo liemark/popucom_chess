@@ -36,9 +36,12 @@ DATA_DIR = "self_play_data"
 # PUCT Search Parameters
 PUCT_SIMULATIONS = 200
 PUCT_C_PUCT = 1.0
-PUCT_TEMPERATURE_INITIAL = 1
+PUCT_TEMPERATURE_INITIAL = 0.7
 PUCT_TEMPERATURE_FINAL = 0.1
 PUCT_TEMPERATURE_DECAY_GAMES_RATIO = 0.5
+
+puct_dirichlet_epsilon=0.25
+puct_dirichlet_alpha=0.03
 
 # Neural Network Model Parameters (must match PomPomNN definition)
 NN_NUM_RES_BLOCKS = 6
@@ -159,7 +162,9 @@ def _play_single_game(worker_args):
 
     # Pass the new flag to MCTSSearcher as well
     mcts_searcher = MCTSSearcher(model=model, c_puct=c_puct,
-                                 use_win_loss_target=use_win_loss_for_value_target_later_stage)
+                                 use_win_loss_target=use_win_loss_for_value_target_later_stage,
+                                 dirichlet_epsilon=puct_dirichlet_epsilon,dirichlet_alpha=puct_dirichlet_alpha
+                                 )
 
     board = initialize_board()
     remaining_moves = {BLACK_PLAYER: 25, WHITE_PLAYER: 25}
