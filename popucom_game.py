@@ -79,7 +79,8 @@ class PomPomGame:
         self.ai_model.eval()
         # Initialize AI searcher (c_puct fixed for game)
         # For game play, use_win_loss_target is always False, as game is score-based
-        self.ai_searcher = MCTSSearcher(model=self.ai_model, c_puct=1.0, use_win_loss_target=False)
+        # 禁用dirichlet noise
+        self.ai_searcher = MCTSSearcher(model=self.ai_model, c_puct=1.0, use_win_loss_target=False, dirichlet_epsilon=0.0)
 
         self.current_player = BLACK_PLAYER  # Who's turn it is now, always starts as Black
         self._last_move_coords = None  # New: Stores (r, c) of the last move for highlighting
