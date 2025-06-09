@@ -23,19 +23,21 @@ from popucom_nn_model import PomPomNN
 
 # 尝试导入 Cython 编译的模块
 # 确保在运行此文件之前，已成功编译 popucom_mcts_cython_utils.pyx
+# cython不完善，不再使用cython
 try:
     import popucom_mcts_cython_utils as mcts_cython
 
     #print("Cython module 'popucom_mcts_cython_utils' loaded successfully.")
 except ImportError:
-    print("WARNING: Cython module 'popucom_mcts_cython_utils' not found.")
-    print("Please compile it using 'python setup.py build_ext --inplace'.")
-    print("Falling back to Pure Python/Numba implementations for MCTS core logic.")
+    #print("WARNING: Cython module 'popucom_mcts_cython_utils' not found.")
+    #print("Please compile it using 'python setup.py build_ext --inplace'.")
+    #print("Falling back to Pure Python/Numba implementations for MCTS core logic.")
     mcts_cython = None
 
 
 class _PurePythonMCTSSearcher:
-    def __init__(self, model, c_puct=1.0, use_win_loss_target=False, debug_scoring=False):
+    def __init__(self, model, c_puct=1.0, use_win_loss_target=False, debug_scoring=False,
+                 dirichlet_alpha=0.03, dirichlet_epsilon=0.25):
         self.model = model
         self.c_puct = c_puct
         self.use_win_loss_target = use_win_loss_target
@@ -43,6 +45,10 @@ class _PurePythonMCTSSearcher:
         self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
         self.model.to(self.device)
         self.model.eval()
+
+        # Dirichlet Noise parameters
+        self.dirichlet_alpha_base = dirichlet_alpha  # Base alpha as per paper
+        self.dirichlet_epsilon = dirichlet_epsilon  # Mixing ratio
 
     @staticmethod
     @jit(float64(float64, int64, int64, float64, float64), nopython=True, cache=True)
@@ -132,10 +138,64 @@ class _PurePythonMCTSSearcher:
         return best_move, node.children.get(best_move)
 
     def _expand_node(self, node):
+        """
+        Expands the node by evaluating it with the neural network and creating child nodes.
+        Applies Dirichlet noise to the root node's policy priors.
+
+        Args:
+            node (MCTSNode): The node to expand.
+
+        Returns:
+            float: The value prediction from the neural network for the node.
+        """
         node.is_expanded = True
-        value_from_nn = self._evaluate_node(node)
+        value_from_nn = self._evaluate_node(node)  # This sets node.P (raw policy)
+
         legal_moves = self._get_legal_moves(node.board, node.current_player)
-        node.legal_moves = legal_moves
+        node.legal_moves = legal_moves  # Store legal moves for selection
+
+        # Apply Dirichlet Noise only to the root node's policy (node.parent is None)
+        if node.parent is None and legal_moves:
+            # AlphaZero paper uses 0.03 for 19x19 board, scales with BOARD_SIZE**2 / num_legal_moves
+            # Here, we use a fixed `dirichlet_alpha_base` from init, for simplicity and common practice.
+            # If a dynamic alpha based on legal_moves is desired, it should be calculated here.
+            # E.g., alpha = self.dirichlet_alpha_base * (BOARD_SIZE**2) / len(legal_moves)
+            # For now, let's keep it simple with a fixed alpha.
+
+            # Generate Dirichlet noise
+            # Ensure alpha is a float or array of floats for np.random.dirichlet
+            # The alpha parameter should be a positive scalar or a sequence of positive scalars.
+            # If scalar, all entries get the same alpha.
+            alpha_vector = np.full(len(legal_moves), self.dirichlet_alpha_base, dtype=np.float64)
+            dirichlet_noise = np.random.dirichlet(alpha_vector)
+
+            # Map legal moves to their flat indices
+            move_to_idx = {(r, c): r * BOARD_SIZE + c for r in range(BOARD_SIZE) for c in range(BOARD_SIZE)}
+            legal_move_flat_indices = [move_to_idx[m] for m in legal_moves]
+
+            # Create a temporary array for noised policy, starting with raw policy
+            noised_P = node.P.copy()
+
+            # Apply noise only to legal moves
+            for i, flat_idx in enumerate(legal_move_flat_indices):
+                noised_P[flat_idx] = (
+                        (1 - self.dirichlet_epsilon) * node.P[flat_idx] +
+                        self.dirichlet_epsilon * dirichlet_noise[i]
+                )
+
+            # Normalize the noised policy to sum to 1 over legal moves
+            sum_noised_legal_P = np.sum(noised_P[legal_move_flat_indices])
+            if sum_noised_legal_P > 0:
+                for flat_idx in legal_move_flat_indices:
+                    noised_P[flat_idx] /= sum_noised_legal_P
+            else:
+                # Fallback to uniform if for some reason sum is zero
+                uniform_prob = 1.0 / len(legal_move_flat_indices)
+                for flat_idx in legal_move_flat_indices:
+                    noised_P[flat_idx] = uniform_prob
+
+            node.P = noised_P  # Update node.P with the noised policy
+
         for move in legal_moves:
             next_board, next_remaining_moves, _ = do_move(
                 node.board, move[0], move[1], node.remaining_moves, node.current_player
