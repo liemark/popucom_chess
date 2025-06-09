@@ -27,7 +27,7 @@ WEIGHT_DECAY = 1e-4  # L2 regularization for the optimizer
 VALUE_LOSS_WEIGHT = 0.5  # Weight for the value loss in total loss (e.g., AlphaZero uses 1.0)
 OWNERSHIP_LOSS_WEIGHT = 0.1  # Weight for the ownership loss (adjust as needed)
 # SCORE_LOSS_WEIGHT is removed as score head is merged into value head
-SLIDING_WINDOW_SIZE = 5000  # 滑动窗口大小，每次训练保留最新的游戏局数
+SLIDING_WINDOW_SIZE = 10000  # 滑动窗口大小，每次训练保留最新的游戏局数
 # AI's neural network model parameters (used for training)
 NN_NUM_RES_BLOCKS = 6
 NN_NUM_FILTERS = 96
