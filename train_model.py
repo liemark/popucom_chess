@@ -21,7 +21,7 @@ except ImportError as e:
 DATA_DIR = "self_play_data"  # Directory where self-play data is saved
 MODELS_DIR = "models"  # Model saving directory
 NUM_EPOCHS = 5  # Number of training epochs
-BATCH_SIZE = 128  # Training batch size
+BATCH_SIZE = 256  # Training batch size
 LEARNING_RATE = 1e-4  # Learning rate for the optimizer
 WEIGHT_DECAY = 1e-4  # L2 regularization for the optimizer
 VALUE_LOSS_WEIGHT = 0.5  # Weight for the value loss in total loss (e.g., AlphaZero uses 1.0)
