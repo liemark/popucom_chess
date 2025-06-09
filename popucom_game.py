@@ -56,7 +56,7 @@ class PomPomGame:
         master.title("泡姆棋")  # Changed title to be more general for both modes
 
         self.board_size = BOARD_SIZE
-        self.cell_size = 150  # Initial cell size, increased from 50 to make the board larger
+        self.cell_size = 100  # Initial cell size, increased from 50 to make the board larger
         self.canvas_width = self.board_size * self.cell_size
         self.canvas_height = self.board_size * self.cell_size
 
@@ -152,7 +152,7 @@ class PomPomGame:
         self.ai_depth_slider.pack(pady=(0, 10))
 
         # New: Temperature Slider and Label
-        self.temperature_label = tk.Label(master, text="AI 落子温度 (探索性):", font=("Arial", 10))
+        self.temperature_label = tk.Label(master, text="AI 落子温度 (选择次优解):", font=("Arial", 10))
         self.temperature_label.pack(pady=(10, 0))
         self.temperature_slider = Scale(master, from_=0.0, to=2.0, orient=tk.HORIZONTAL, resolution=0.1, length=300)
         self.temperature_slider.set(0.0)  # Default temperature
@@ -729,7 +729,7 @@ class PomPomGame:
         self.analysis_scores = scores_for_display
         self.highlighted_ai_analysis_move = ai_suggested_move  # Store suggested move
         self.draw_board()  # Redraw board to show analysis scores and suggested move
-        self.analyze_button.config(state=tk.NORMAL, text="清除分析")  # Change text to clear analysis
+        self.analyze_button.config(state=tk.NORMAL, text="再次分析")  # Change text to clear analysis
         self.analysis_in_progress = False
 
         self._toggle_interaction_buttons(tk.NORMAL)  # Re-enable all interaction buttons after analysis
