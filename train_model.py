@@ -7,6 +7,7 @@ import numpy as np
 import os
 import pickle
 import sys
+import random  # Import random for choosing transformations
 
 # Import NN model and interface
 try:
@@ -20,21 +21,22 @@ except ImportError as e:
 # --- Configuration Parameters ---
 DATA_DIR = "self_play_data"  # Directory where self-play data is saved
 MODELS_DIR = "models"  # Model saving directory
-NUM_EPOCHS = 5  # Number of training epochs
-BATCH_SIZE = 256  # Training batch size
-LEARNING_RATE = 1e-4  # Learning rate for the optimizer
+NUM_EPOCHS = 20  # Number of training epochs
+BATCH_SIZE = 128  # Training batch size
+LEARNING_RATE = 1e-5  # Learning rate for the optimizer
 WEIGHT_DECAY = 1e-4  # L2 regularization for the optimizer
 VALUE_LOSS_WEIGHT = 0.5  # Weight for the value loss in total loss (e.g., AlphaZero uses 1.0)
 OWNERSHIP_LOSS_WEIGHT = 0.1  # Weight for the ownership loss (adjust as needed)
 # SCORE_LOSS_WEIGHT is removed as score head is merged into value head
-SLIDING_WINDOW_SIZE = 10000  # 滑动窗口大小，每次训练保留最新的游戏局数
+SLIDING_WINDOW_SIZE = 3000  # 滑动窗口大小，每次训练保留最新的游戏局数
 # AI's neural network model parameters (used for training)
 NN_NUM_RES_BLOCKS = 6
 NN_NUM_FILTERS = 96
 
+
 class SelfPlayDataset(Dataset):
     """
-    Custom Dataset for loading self-play game data.
+    Custom Dataset for loading self-play game data with data augmentation.
     Each item in the dataset corresponds to a single game step.
     """
 
@@ -80,27 +82,124 @@ class SelfPlayDataset(Dataset):
     def __len__(self):
         return len(self.all_steps)
 
+    @staticmethod
+    def _transform_2d_array(arr_2d, transform_idx, board_size):
+        """
+        Applies a 2D transformation (rotation and/or flip) to a (board_size, board_size) array.
+        There are 8 symmetries for a square board.
+        Ensures the returned array is a contiguous copy to avoid negative stride issues.
+        """
+        transformed_arr = arr_2d
+
+        # Identity
+        if transform_idx == 0:
+            transformed_arr = arr_2d
+        # Rotations
+        elif transform_idx == 1:  # 90 deg clockwise
+            transformed_arr = np.rot90(arr_2d, k=-1)
+        elif transform_idx == 2:  # 180 deg
+            transformed_arr = np.rot90(arr_2d, k=-2)
+        elif transform_idx == 3:  # 270 deg clockwise
+            transformed_arr = np.rot90(arr_2d, k=-3)
+        # Flips (combined with rotations for other symmetries)
+        elif transform_idx == 4:  # Horizontal flip (across vertical midline)
+            transformed_arr = np.fliplr(arr_2d)
+        elif transform_idx == 5:  # Horizontal flip then 90 deg clockwise rot (equiv. anti-diagonal flip)
+            transformed_arr = np.rot90(np.fliplr(arr_2d), k=-1)
+        elif transform_idx == 6:  # Horizontal flip then 180 deg rot (equiv. vertical flip)
+            transformed_arr = np.rot90(np.fliplr(arr_2d), k=-2)
+        elif transform_idx == 7:  # Horizontal flip then 270 deg clockwise rot (equiv. main-diagonal flip)
+            transformed_arr = np.rot90(np.fliplr(arr_2d), k=-3)
+        else:
+            raise ValueError(f"Invalid transform_idx: {transform_idx}")
+
+        # IMPORTANT FIX: Ensure the returned array is a contiguous copy.
+        # This resolves the "negative stride" ValueError when converting to PyTorch tensor.
+        return transformed_arr.copy()
+
+    @staticmethod
+    def _transform_coords(r, c, transform_idx, board_size):
+        """
+        Applies the same 2D transformation to a (r, c) coordinate.
+        Returns the new (r', c') coordinate.
+        """
+        N = board_size
+        # Identity
+        if transform_idx == 0:
+            return r, c
+        # Rotations
+        elif transform_idx == 1:  # 90 deg clockwise (x,y) -> (y, N-1-x)
+            return c, N - 1 - r
+        elif transform_idx == 2:  # 180 deg (x,y) -> (N-1-x, N-1-y)
+            return N - 1 - r, N - 1 - c
+        elif transform_idx == 3:  # 270 deg clockwise (x,y) -> (N-1-y, x)
+            return N - 1 - c, r
+        # Flips
+        elif transform_idx == 4:  # Horizontal flip (x,y) -> (x, N-1-y)
+            return r, N - 1 - c
+        elif transform_idx == 5:  # Horizontal flip then 90 deg clockwise rot (x,y) -> (N-1-x, y) then (y, x)
+            # Apply fliplr: (r, N-1-c)
+            # Then apply rot90_cw to (r, N-1-c): (N-1-c, N-1-r)
+            return N - 1 - c, N - 1 - r  # This is main diagonal flip (swap r,c and reflect across N-1-r, N-1-c)
+        elif transform_idx == 6:  # Horizontal flip then 180 deg rot (x,y) -> (N-1-x, y)
+            # Apply fliplr: (r, N-1-c)
+            # Then apply rot180 to (r, N-1-c): (N-1-r, N-(N-1-c)-1) = (N-1-r, c)
+            return N - 1 - r, c  # This is vertical flip
+        elif transform_idx == 7:  # Horizontal flip then 270 deg clockwise rot (x,y) -> (y, N-1-x)
+            # Apply fliplr: (r, N-1-c)
+            # Then apply rot270_cw to (r, N-1-c): (N-(N-1-c)-1, r) = (c, r)
+            return c, r  # This is anti-diagonal flip (swap r,c and reflect only r)
+        else:
+            raise ValueError(f"Invalid transform_idx: {transform_idx}")
+
     def __getitem__(self, idx):
         step = self.all_steps[idx]
+
+        # Choose a random transformation (0-7 for 8 symmetries)
+        # In a typical AlphaZero/KataGo setup, during training, a random transform is applied to each sample.
+        transform_idx = random.randint(0, 7)
+
+        # --- Apply transformation to input_features ---
         # input_features: (BOARD_SIZE, BOARD_SIZE, NUM_INPUT_CHANNELS) numpy array
-        # mcts_policy: (BOARD_SIZE, BOARD_SIZE) numpy array
-        # game_outcome_value: float (this is now the unified value/score target)
+        # Note: np.zeros_like creates a new array, ensuring it's contiguous.
+        # But we still need to ensure the source of the data for each channel is contiguous too.
+        transformed_input_features = np.zeros_like(step['input_features'],
+                                                   dtype=step['input_features'].dtype)  # Preserve original dtype
+        for channel in range(step['input_features'].shape[2]):
+            # Call _transform_2d_array, which now includes .copy()
+            transformed_input_features[:, :, channel] = \
+                self._transform_2d_array(step['input_features'][:, :, channel], transform_idx, BOARD_SIZE)
+
+        # --- Apply transformation to mcts_policy target ---
+        # mcts_policy: (BOARD_SIZE, BOARD_SIZE) numpy array (flattened when loaded)
+        original_policy_2d = step['mcts_policy'].reshape(BOARD_SIZE, BOARD_SIZE)
+        transformed_policy_2d = np.zeros_like(original_policy_2d, dtype=np.float32)  # Policy should be float32
+
+        # Iterate through original coordinates, transform, and place probabilities
+        for r_orig in range(BOARD_SIZE):
+            for c_orig in range(BOARD_SIZE):
+                r_trans, c_trans = self._transform_coords(r_orig, c_orig, transform_idx, BOARD_SIZE)
+                transformed_policy_2d[r_trans, c_trans] = original_policy_2d[r_orig, c_orig]
+
+        # Flatten the transformed policy for the policy head target
+        # transformed_policy_2d is created with np.zeros_like and filled, so it should be contiguous.
+        transformed_mcts_policy_target = torch.from_numpy(transformed_policy_2d).flatten().float()
+
+        # --- Apply transformation to ownership_target ---
         # ownership_target: (BOARD_SIZE, BOARD_SIZE) numpy array
-        # score_target: (float) - This field might exist in old data but will be ignored for new data
+        # Call _transform_2d_array, which now includes .copy()
+        transformed_ownership_target = self._transform_2d_array(step['ownership_target'], transform_idx, BOARD_SIZE)
+        transformed_ownership_target_tensor = torch.from_numpy(transformed_ownership_target).float()
 
-        # Convert numpy arrays to torch tensors and adjust dimensions
-        # input_features needs to be (NUM_INPUT_CHANNELS, BOARD_SIZE, BOARD_SIZE) for PyTorch Conv2d
-        input_tensor = torch.from_numpy(step['input_features']).permute(2, 0, 1).float()
-        # mcts_policy is 9x9, flatten it for policy head target
-        mcts_policy_target = torch.from_numpy(step['mcts_policy']).flatten().float()
-        # value is a scalar
-        value_target = torch.tensor(step['game_outcome_value']).float().unsqueeze(0)  # Make it (1,)
-        # ownership is 9x9
-        ownership_target = torch.from_numpy(step['ownership_target']).float()
-        # score_target is removed from here
+        # --- Value target remains unchanged (scalar) ---
+        value_target = torch.tensor(step['game_outcome_value']).float().unsqueeze(0)
 
-        # Return only the necessary targets
-        return input_tensor, mcts_policy_target, value_target, ownership_target
+        # Convert transformed input features to torch tensor and adjust dimensions
+        # transformed_input_features is created with np.zeros_like and filled, so it should be contiguous.
+        transformed_input_tensor = torch.from_numpy(transformed_input_features).permute(2, 0, 1).float()
+
+        # Return the transformed tensors
+        return transformed_input_tensor, transformed_mcts_policy_target, value_target, transformed_ownership_target_tensor
 
 
 class Trainer:
@@ -125,11 +224,10 @@ class Trainer:
 
         self.scaler = torch.amp.GradScaler(enabled=(device.type == 'cuda'))
 
-
     def train_epoch(self):
         self.model.train()  # Set model to training mode
         total_policy_loss = 0
-        total_value_loss = 0 # Now accumulates unified value/score loss
+        total_value_loss = 0  # Now accumulates unified value/score loss
         total_ownership_loss = 0
         # total_score_loss is removed
         total_loss = 0
@@ -139,7 +237,7 @@ class Trainer:
         for batch_idx, (inputs, policy_targets, value_targets, ownership_targets) in enumerate(self.data_loader):
             inputs, policy_targets, value_targets, ownership_targets = \
                 inputs.to(self.device), policy_targets.to(self.device), value_targets.to(self.device), \
-                ownership_targets.to(self.device)
+                    ownership_targets.to(self.device)
 
             self.optimizer.zero_grad()  # Zero the gradients
 
@@ -219,7 +317,7 @@ def load_latest_model(model, models_dir, device):
     latest_model_path = None
     for f_name in model_files:
         try:
-            iter_str = f_name.replace("model_iter_", "").replace(".pth", "")
+            iter_str = f_name.replace("model_iter_", "").replace(".pth", "")  # Corrected from .pkl to .pth
             iteration = int(iter_str)
             if iteration > latest_iteration:
                 latest_iteration = iteration
@@ -267,7 +365,6 @@ if __name__ == "__main__":
     if device.type == 'cuda':
         torch.backends.cudnn.benchmark = True
         print("Enabled torch.backends.cudnn.benchmark for potential performance gains on GPU.")
-
 
     # 1. Load Data
     dataset = SelfPlayDataset(DATA_DIR)
