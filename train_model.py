@@ -21,7 +21,7 @@ except ImportError as e:
 # --- Configuration Parameters ---
 DATA_DIR = "self_play_data"  # Directory where self-play data is saved
 MODELS_DIR = "models"  # Model saving directory
-NUM_EPOCHS = 20  # Number of training epochs
+NUM_EPOCHS = 15  # Number of training epochs
 BATCH_SIZE = 256  # Training batch size
 LEARNING_RATE = 1e-5  # Learning rate for the optimizer
 WEIGHT_DECAY = 1e-4  # L2 regularization for the optimizer
