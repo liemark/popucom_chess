@@ -41,7 +41,7 @@ PUCT_TEMPERATURE_FINAL = 0.1
 PUCT_TEMPERATURE_DECAY_GAMES_RATIO = 0.5
 
 puct_dirichlet_epsilon=0.25
-puct_dirichlet_alpha=0.03
+puct_dirichlet_alpha=0.003
 
 # Neural Network Model Parameters (must match PomPomNN definition)
 NN_NUM_RES_BLOCKS = 6
